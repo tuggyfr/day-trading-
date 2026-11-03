@@ -191,3 +191,24 @@ def load_csv(path: str) -> dict[str, pd.DataFrame]:
         df = g.set_index("timestamp")[["open", "high", "low", "close", "volume"]].sort_index()
         out[str(sym).upper()] = regular_session(df)
     return out
+
+
+def load_tradingview_csv(path: str, symbol: str) -> dict[str, pd.DataFrame]:
+    """A file from TradingView's chart menu -> "Download chart data" (one symbol per file).
+
+    TradingView writes `time,open,high,low,close,Volume,...` (plus a column per indicator on the chart).
+    `time` is Unix seconds by default, or an ISO string if "ISO time" was chosen. Export a 1-minute chart.
+    """
+    from .broker import regular_session
+
+    raw = pd.read_csv(path)
+    raw.columns = [c.strip().lower() for c in raw.columns]
+    missing = {"time", "open", "high", "low", "close"} - set(raw.columns)
+    if missing:
+        raise SystemExit(f"{path}: not a TradingView export (missing columns {sorted(missing)})")
+    if "volume" not in raw.columns:
+        raw["volume"] = 1  # VWAP then becomes a plain average; export with volume if you can
+    t = raw["time"]
+    ts = pd.to_datetime(t, unit="s", utc=True) if pd.api.types.is_numeric_dtype(t) else pd.to_datetime(t, utc=True)
+    df = raw.assign(timestamp=ts).set_index("timestamp")[["open", "high", "low", "close", "volume"]].sort_index()
+    return {symbol.upper(): regular_session(df)}

@@ -1,0 +1,102 @@
+//@version=6
+// Mirror of the Python bot's opening-range breakout strategy (bot/strategy.py), for checking it on
+// TradingView's charts and Strategy Tester. Same rules and default settings as the bot's .env.
+//
+// HOW TO USE
+//   1. Open a 1-minute chart of a US stock (e.g. SPY) with REGULAR trading hours only
+//      (chart settings -> Symbol -> Session: Regular), otherwise VWAP and the range include pre-market.
+//   2. Pine Editor (bottom panel) -> paste this file -> "Add to chart".
+//   3. Open the "Strategy Tester" tab to see trades, win rate, profit factor and drawdown.
+//      Premium plans can enable "Deep Backtesting" to test beyond the bars loaded on the chart.
+//
+// Small known differences from the Python backtest: TradingView guesses the price path inside each bar
+// differently when a stop and target are both touched in one bar (the Python version always assumes the
+// stop hit first), and it does not skip entries that gap through the stop. Expect close, not identical, numbers.
+
+strategy("ORB + VWAP (bot mirror)", overlay = true, initial_capital = 25000, pyramiding = 0,
+     slippage = 2, calc_on_every_tick = false)
+
+orMinutes   = input.int(15, "Opening range (minutes)", minval = 1)
+lastEntryHH = input.int(11, "Last entry hour (ET)")
+lastEntryMM = input.int(30, "Last entry minute (ET)")
+flatHH      = input.int(15, "Flatten hour (ET)")
+flatMM      = input.int(55, "Flatten minute (ET)")
+rr          = input.float(2.0, "Reward : risk")
+useMidStop  = input.bool(false, "Stop at range midpoint (instead of other side)")
+minRangePct = input.float(0.2, "Min range width %") / 100
+maxRangePct = input.float(3.0, "Max range width %") / 100
+useVwap     = input.bool(true, "Require VWAP filter")
+allowShort  = input.bool(false, "Allow shorts")
+riskPct     = input.float(0.5, "Risk per trade, % of equity") / 100
+maxPosPct   = input.float(20.0, "Max position, % of equity") / 100
+
+tz        = "America/New_York"
+tod       = hour(time, tz) * 60 + minute(time, tz)
+openMin   = 9 * 60 + 30
+rangeEnd  = openMin + orMinutes
+lastEntry = lastEntryHH * 60 + lastEntryMM
+flatMin   = flatHH * 60 + flatMM
+
+newDay = dayofmonth(time, tz) != dayofmonth(time[1], tz)
+
+var float orHigh = na
+var float orLow  = na
+var bool  traded = false
+var float stopPx = na
+
+if newDay
+    orHigh := na
+    orLow  := na
+    traded := false
+
+inRange = tod >= openMin and tod < rangeEnd
+if inRange
+    orHigh := na(orHigh) ? high : math.max(orHigh, high)
+    orLow  := na(orLow) ? low : math.min(orLow, low)
+
+vwapVal  = ta.vwap(hlc3)
+mid      = (orHigh + orLow) / 2
+widthPct = (orHigh - orLow) / mid
+widthOk  = not na(orHigh) and widthPct >= minRangePct and widthPct <= maxRangePct
+canEnter = tod >= rangeEnd and tod < lastEntry and widthOk and not traded and strategy.position_size == 0
+
+longSig  = canEnter and close > orHigh and (not useVwap or close > vwapVal)
+shortSig = allowShort and canEnter and close < orLow and (not useVwap or close < vwapVal)
+
+// Same sizing as bot/risk.py: risk a fixed % of equity, cap the position size, widen ultra-tight stops.
+f_qty(entryRef, stopRef) =>
+    dist = math.max(math.abs(entryRef - stopRef), entryRef * 0.001)
+    math.floor(math.min(strategy.equity * riskPct / dist, strategy.equity * maxPosPct / entryRef))
+
+// Orders placed at a bar's close fill at the next bar's open, the same as the Python backtest.
+if longSig
+    stopPx := useMidStop ? mid : orLow
+    q = f_qty(close, stopPx)
+    if q >= 1
+        strategy.entry("L", strategy.long, qty = q)
+        strategy.exit("L-exit", "L", stop = stopPx, limit = close + rr * (close - stopPx))
+    traded := true
+else if shortSig
+    stopPx := useMidStop ? mid : orHigh
+    q = f_qty(close, stopPx)
+    if q >= 1
+        strategy.entry("S", strategy.short, qty = q)
+        strategy.exit("S-exit", "S", stop = stopPx, limit = close - rr * (stopPx - close))
+    traded := true
+
+// Once filled, re-anchor the target to the actual fill price (the live bot does the same).
+if strategy.position_size > 0
+    e = strategy.position_avg_price
+    strategy.exit("L-exit", "L", stop = stopPx, limit = e + rr * (e - stopPx))
+if strategy.position_size < 0
+    e = strategy.position_avg_price
+    strategy.exit("S-exit", "S", stop = stopPx, limit = e - rr * (stopPx - e))
+
+if tod >= flatMin
+    strategy.close_all(comment = "EOD")
+
+plot(orHigh, "Range high", color.green, style = plot.style_linebr)
+plot(orLow, "Range low", color.red, style = plot.style_linebr)
+plot(vwapVal, "VWAP", color.orange)
+plotshape(longSig, "Long signal", shape.triangleup, location.belowbar, color.green, size = size.small)
+plotshape(shortSig, "Short signal", shape.triangledown, location.abovebar, color.red, size = size.small)

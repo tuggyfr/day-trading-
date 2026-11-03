@@ -3,6 +3,7 @@
   python -m bot status                         account, market clock, open positions
   python -m bot backtest --days 60             backtest on Alpaca historical data
   python -m bot backtest --csv bars.csv        backtest on your own CSV
+  python -m bot backtest --tv-csv spy.csv --symbols SPY   backtest on a TradingView chart export
   python -m bot run                            start trading (paper unless you opted into live)
   python -m bot flatten                        PANIC BUTTON: cancel all orders, close all positions
 """
@@ -80,10 +81,14 @@ def cmd_flatten(settings, args) -> None:
 
 
 def cmd_backtest(settings, args) -> None:
-    from .backtest import load_csv, run_backtest, summarize
+    from .backtest import load_csv, load_tradingview_csv, run_backtest, summarize
 
     symbols = [s.strip().upper() for s in args.symbols.split(",")] if args.symbols else settings.symbols
-    if args.csv:
+    if args.tv_csv:
+        if not args.symbols or len(symbols) != 1:
+            raise SystemExit("--tv-csv needs --symbols with exactly one symbol, e.g. --symbols SPY")
+        bars = load_tradingview_csv(args.tv_csv, symbols[0])
+    elif args.csv:
         bars = {k: v for k, v in load_csv(args.csv).items() if k in symbols}
     else:
         b = _broker(settings)
@@ -119,6 +124,7 @@ def main(argv: list[str] | None = None) -> None:
     bt = sub.add_parser("backtest")
     bt.add_argument("--days", type=int, default=90, help="calendar days of history (Alpaca)")
     bt.add_argument("--csv", help="use a CSV file instead of Alpaca")
+    bt.add_argument("--tv-csv", help="use a TradingView 'Download chart data' export (1-minute chart)")
     bt.add_argument("--symbols", help="comma list; default BOT_SYMBOLS")
     bt.add_argument("--equity", type=float, default=25_000.0)
     bt.add_argument("--slippage-bps", type=float, default=2.0)

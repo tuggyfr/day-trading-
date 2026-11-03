@@ -36,6 +36,7 @@ python -m bot status              # check the connection: account, market clock,
 python -m bot backtest --days 90  # test the strategy on the last 90 days of real data FIRST
 python -m bot run                 # start trading (paper). Leave it running during market hours.
 python -m bot flatten             # panic button: cancel all orders + close all positions
+python -m bot backtest --tv-csv spy.csv --symbols SPY   # backtest a TradingView chart export
 pytest                            # run the test suite
 ```
 Logs go to `logs/bot.log`. Every order is recorded in `logs/trades.csv`.
@@ -60,7 +61,9 @@ bot/engine.py     live/paper trading loop
 bot/backtest.py   historical simulation with pessimistic fills
 bot/notifier.py   Telegram / Discord alerts
 tests/            tests against a fake broker and simulated prices (no network, no real orders)
-docs/claude-bot-stack.md   researched list of Claude connectors / MCP servers for this project
+tradingview/orb_strategy.pine   the same strategy in Pine Script, for TradingView's Strategy Tester
+docs/claude-bot-stack.md        researched list of Claude connectors / MCP servers for this project
+docs/tradingview-evaluation.md  is TradingView good for tuning the bot? (short answer: for checking, not as the data source)
 ```
 
 ## Using Claude with it
