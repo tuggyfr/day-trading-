@@ -6,3 +6,5 @@ __pycache__/
 .venv/
 venv/
 *.log
+logs/
+.pytest_cache/
