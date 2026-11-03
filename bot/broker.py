@@ -7,6 +7,8 @@ order can be sent from a test.
 from __future__ import annotations
 
 import logging
+import time as _time
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
@@ -42,6 +44,49 @@ class PositionInfo:
     unrealized_pl: float
 
 
+class RateLimiter:
+    """Sliding-window limiter: at most `max_calls` per `per_seconds`, blocking until a slot frees up.
+
+    Alpaca allows 200 requests/minute per account, and alpaca-py already retries HTTP 429s. This keeps
+    the bot well under the limit even with many symbols or a misbehaving loop.
+    """
+
+    def __init__(self, max_calls: int = 150, per_seconds: float = 60.0, clock=_time.monotonic, sleep=_time.sleep):
+        self.max_calls, self.per = max_calls, per_seconds
+        self._clock, self._sleep = clock, sleep
+        self._calls: deque[float] = deque()
+
+    def acquire(self) -> None:
+        while True:
+            now = self._clock()
+            while self._calls and now - self._calls[0] >= self.per:
+                self._calls.popleft()
+            if len(self._calls) < self.max_calls:
+                self._calls.append(now)
+                return
+            wait = self.per - (now - self._calls[0])
+            log.warning("rate limit: pausing %.1fs", wait)
+            self._sleep(max(wait, 0.05))
+
+
+class _RateLimited:
+    """Wraps an alpaca-py client so every method call waits for the rate limiter first."""
+
+    def __init__(self, client, limiter: RateLimiter):
+        self._client, self._limiter = client, limiter
+
+    def __getattr__(self, name):
+        attr = getattr(self._client, name)
+        if not callable(attr):
+            return attr
+
+        def call(*args, **kwargs):
+            self._limiter.acquire()
+            return attr(*args, **kwargs)
+
+        return call
+
+
 def client_order_id(day: datetime, symbol: str) -> str:
     """Deterministic per symbol per day. Alpaca rejects duplicate IDs, so a restarted bot can't double-enter."""
     return f"orb-{day:%Y%m%d}-{symbol}"
@@ -64,8 +109,9 @@ class AlpacaBroker:
         from alpaca.trading.client import TradingClient
 
         self.paper = paper
-        self.trading = TradingClient(api_key, secret_key, paper=paper)
-        self.data = StockHistoricalDataClient(api_key, secret_key)
+        limiter = RateLimiter()  # shared: Alpaca's limit is per account across both clients
+        self.trading = _RateLimited(TradingClient(api_key, secret_key, paper=paper), limiter)
+        self.data = _RateLimited(StockHistoricalDataClient(api_key, secret_key), limiter)
         self.feed = DataFeed(data_feed)
 
     # ---- account / market state -------------------------------------------------------------

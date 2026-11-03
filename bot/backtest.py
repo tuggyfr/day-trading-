@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass
 import numpy as np
 import pandas as pd
 
-from .config import RiskParams, StrategyParams
+from .config import SYMBOL_RE, RiskParams, StrategyParams
 from .risk import position_size
 from .strategy import first_signal
 
@@ -188,6 +188,8 @@ def load_csv(path: str) -> dict[str, pd.DataFrame]:
     raw["timestamp"] = pd.to_datetime(raw["timestamp"], utc=True)
     out = {}
     for sym, g in raw.groupby("symbol"):
+        if not SYMBOL_RE.fullmatch(str(sym).upper()):
+            continue  # ignore junk rows rather than trusting the file
         df = g.set_index("timestamp")[["open", "high", "low", "close", "volume"]].sort_index()
         out[str(sym).upper()] = regular_session(df)
     return out

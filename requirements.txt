@@ -1,5 +1,7 @@
-alpaca-py>=0.44
-pandas>=2.2
-numpy>=1.26
-python-dotenv>=1.0
-requests>=2.31
+# Exact versions, tested together and checked with pip-audit (no known vulnerabilities, Nov 2026).
+# To update: pip install -U <pkg>, run pytest, run `uvx pip-audit -r requirements.txt`, then change the pin.
+alpaca-py==0.44.0
+pandas==3.1.0
+numpy==2.5.4
+python-dotenv==1.2.4
+requests==2.34.2

@@ -27,6 +27,7 @@ Safety rails (all set in `.env`):
 python3 -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements-dev.txt
 cp .env.example .env                                     # then paste your Alpaca PAPER keys into .env
+chmod 600 .env                                           # only you can read your keys (Mac/Linux)
 ```
 Get free paper keys at https://alpaca.markets → Paper Trading → API Keys.
 

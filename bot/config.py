@@ -6,7 +6,10 @@ ALPACA_PAPER_TRADE=false *and* I_UNDERSTAND_LIVE_TRADING=yes.
 
 from __future__ import annotations
 
+import logging
 import os
+import re
+import stat
 from dataclasses import dataclass, field
 from datetime import time
 
@@ -82,6 +85,47 @@ class Settings:
     strategy: StrategyParams = field(default_factory=StrategyParams)
     risk: RiskParams = field(default_factory=RiskParams)
 
+    def validate_params(self) -> None:
+        """Reject settings that are malformed or dangerous. Runs for every command, including backtests.
+
+        Percentages are fractions: 0.005 = 0.5%. The classic mistake is writing 0.5 meaning "half a
+        percent", which would risk 50% of the account per trade, so the bounds below catch it.
+        """
+        r, p = self.risk, self.strategy
+        problems = []
+
+        def bound(name: str, value: float, lo: float, hi: float) -> None:
+            if not (lo < value <= hi):
+                problems.append(f"{name}={value} must be > {lo} and <= {hi}")
+
+        bound("RISK_PER_TRADE_PCT", r.risk_per_trade_pct, 0, 0.05)
+        bound("RISK_MAX_POSITION_PCT", r.max_position_pct, 0, 1.0)
+        bound("RISK_MAX_DAILY_LOSS_PCT", r.max_daily_loss_pct, 0, 0.20)
+        bound("RISK_MIN_STOP_PCT", r.min_stop_pct, 0, 0.05)
+        bound("RISK_MAX_OPEN_POSITIONS", r.max_open_positions, 0, 50)
+        bound("RISK_MAX_TRADES_PER_DAY", r.max_trades_per_day, 0, 100)
+        bound("ORB_MINUTES", p.opening_range_minutes, 0, 120)
+        bound("ORB_REWARD_RISK", p.reward_risk, 0, 20)
+        if not (0 <= p.min_range_pct < p.max_range_pct <= 0.5):
+            problems.append("need 0 <= ORB_MIN_RANGE_PCT < ORB_MAX_RANGE_PCT <= 0.5")
+        if p.stop_mode not in {"range", "mid"}:
+            problems.append(f"ORB_STOP_MODE={p.stop_mode!r} must be 'range' or 'mid'")
+        if not (p.last_entry_time < p.flatten_time <= time(16, 0)):
+            problems.append("need ORB_LAST_ENTRY < ORB_FLATTEN <= 16:00")
+        if self.data_feed not in {"iex", "sip", "delayed_sip"}:
+            problems.append(f"ALPACA_DATA_FEED={self.data_feed!r} must be iex, sip or delayed_sip")
+        if self.poll_seconds < 5:
+            problems.append("BOT_POLL_SECONDS must be >= 5 (protects the API rate limit)")
+        bad = [s for s in self.symbols if not SYMBOL_RE.fullmatch(s)]
+        if bad:
+            problems.append(f"invalid symbols in BOT_SYMBOLS: {bad}")
+        if len(self.symbols) > 50:
+            problems.append("BOT_SYMBOLS has more than 50 symbols")
+        if self.discord_webhook_url and not self.discord_webhook_url.startswith("https://"):
+            problems.append("DISCORD_WEBHOOK_URL must start with https://")
+        if problems:
+            raise SystemExit("Invalid settings in .env:\n  - " + "\n  - ".join(problems))
+
     def validate_for_trading(self) -> None:
         if not self.api_key or not self.secret_key:
             raise SystemExit(
@@ -97,10 +141,23 @@ class Settings:
 
 
 DEFAULT_SYMBOLS = "SPY,QQQ,AAPL,MSFT,NVDA,AMD,META,TSLA"
+SYMBOL_RE = re.compile(r"[A-Z]{1,6}([./][A-Z]{1,3})?")  # SPY, BRK.B, BTC/USD
+
+
+def check_env_file_permissions(env_file: str | None) -> None:
+    """Warn if the file holding your API keys is readable by other users on this machine."""
+    if not env_file or os.name != "posix" or not os.path.isfile(env_file):
+        return
+    mode = os.stat(env_file).st_mode
+    if mode & (stat.S_IRWXG | stat.S_IRWXO):
+        logging.getLogger("bot.config").warning(
+            "%s is readable by other users on this machine. Run: chmod 600 %s", env_file, env_file
+        )
 
 
 def load_settings(env_file: str | None = ".env") -> Settings:
     if env_file:
+        check_env_file_permissions(env_file)
         load_dotenv(env_file, override=False)
     strategy = StrategyParams(
         opening_range_minutes=_int("ORB_MINUTES", 15),
@@ -121,7 +178,7 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         max_trades_per_day=_int("RISK_MAX_TRADES_PER_DAY", 5),
         min_stop_pct=_float("RISK_MIN_STOP_PCT", 0.001),
     )
-    return Settings(
+    settings = Settings(
         api_key=os.getenv("ALPACA_API_KEY", ""),
         secret_key=os.getenv("ALPACA_SECRET_KEY", ""),
         paper=_bool("ALPACA_PAPER_TRADE", True),
@@ -136,3 +193,5 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         strategy=strategy,
         risk=risk,
     )
+    settings.validate_params()
+    return settings

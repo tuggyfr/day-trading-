@@ -23,14 +23,22 @@ from .config import load_settings
 NY = ZoneInfo("America/New_York")
 
 
-def _setup_logging(log_dir: str, verbose: bool) -> None:
-    os.makedirs(log_dir, exist_ok=True)
+def _redactor(settings):
+    from .notifier import Redactor
+
+    return Redactor([settings.api_key, settings.secret_key, settings.telegram_bot_token, settings.discord_webhook_url])
+
+
+def _setup_logging(settings, verbose: bool) -> None:
+    from .notifier import RedactingFilter
+
+    os.makedirs(settings.log_dir, mode=0o700, exist_ok=True)  # logs show your balance: keep them private
     fmt = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
-    logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.INFO,
-        format=fmt,
-        handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler(os.path.join(log_dir, "bot.log"))],
-    )
+    handlers = [logging.StreamHandler(sys.stdout), logging.FileHandler(os.path.join(settings.log_dir, "bot.log"))]
+    redacting = RedactingFilter(_redactor(settings))
+    for h in handlers:
+        h.addFilter(redacting)  # API keys / tokens never reach the screen or the log file
+    logging.basicConfig(level=logging.DEBUG if verbose else logging.INFO, format=fmt, handlers=handlers)
     for noisy in ("urllib3", "alpaca"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
@@ -66,7 +74,9 @@ def cmd_run(settings, _args) -> None:
         import time
 
         time.sleep(10)
-    n = Notifier(settings.telegram_bot_token, settings.telegram_chat_id, settings.discord_webhook_url)
+    n = Notifier(
+        settings.telegram_bot_token, settings.telegram_chat_id, settings.discord_webhook_url, _redactor(settings)
+    )
     Engine(settings, b, n).run_forever()
 
 
@@ -82,8 +92,16 @@ def cmd_flatten(settings, args) -> None:
 
 def cmd_backtest(settings, args) -> None:
     from .backtest import load_csv, load_tradingview_csv, run_backtest, summarize
+    from .config import SYMBOL_RE
 
     symbols = [s.strip().upper() for s in args.symbols.split(",")] if args.symbols else settings.symbols
+    bad = [s for s in symbols if not SYMBOL_RE.fullmatch(s)]
+    if bad:
+        raise SystemExit(f"invalid symbols: {bad}")
+    if not (1 <= args.days <= 3650):
+        raise SystemExit("--days must be between 1 and 3650")
+    if args.equity <= 0 or args.slippage_bps < 0 or args.fee_per_share < 0:
+        raise SystemExit("--equity must be > 0; --slippage-bps and --fee-per-share must be >= 0")
     if args.tv_csv:
         if not args.symbols or len(symbols) != 1:
             raise SystemExit("--tv-csv needs --symbols with exactly one symbol, e.g. --symbols SPY")
@@ -132,7 +150,7 @@ def main(argv: list[str] | None = None) -> None:
     args = ap.parse_args(argv)
 
     settings = load_settings(args.env)
-    _setup_logging(settings.log_dir, args.verbose)
+    _setup_logging(settings, args.verbose)
     {"status": cmd_status, "run": cmd_run, "flatten": cmd_flatten, "backtest": cmd_backtest}[args.cmd](settings, args)
 
 
