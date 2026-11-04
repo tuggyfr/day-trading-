@@ -65,6 +65,7 @@ tests/            tests against a fake broker and simulated prices (no network, 
 tradingview/orb_strategy.pine   the same strategy in Pine Script, for TradingView's Strategy Tester
 docs/claude-bot-stack.md        researched list of Claude connectors / MCP servers for this project
 docs/tradingview-evaluation.md  is TradingView good for tuning the bot? (short answer: for checking, not as the data source)
+docs/strategy-research.md       evidence on strategies, news and X/social sentiment, and what to build next
 ```
 
 ## Using Claude with it
