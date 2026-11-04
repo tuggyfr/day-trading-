@@ -50,8 +50,7 @@ cp .env.example .env                                     # then paste your Alpac
 chmod 600 .env                                           # only you can read your keys (Mac/Linux)
 ```
 On a Mac you can instead run `bash setup_mac.sh`. To update later: download the ZIP from GitHub, then `bash update_mac.sh`.
-```bash
-```
+
 Get free paper keys at https://alpaca.markets → Paper Trading → API Keys.
 
 ## Use it
