@@ -2,6 +2,7 @@
 
   python -m bot status                         account, market clock, open positions
   python -m bot backtest --days 60             backtest on Alpaca historical data
+  python -m bot backtest --strategy in_play --days 365   stocks-in-play backtest
   python -m bot backtest --csv bars.csv        backtest on your own CSV
   python -m bot backtest --tv-csv spy.csv --symbols SPY   backtest on a TradingView chart export
   python -m bot run                            start trading (paper unless you opted into live)
@@ -57,7 +58,13 @@ def cmd_status(settings, _args) -> None:
     print(f"Market open:   {c.is_open}  (now {c.now:%Y-%m-%d %H:%M} ET, next open {c.next_open:%a %H:%M})")
     print(f"Equity:        ${a.equity:,.2f}  (today {a.equity - a.last_equity:+,.2f})")
     print(f"Buying power:  ${a.buying_power:,.2f}")
-    print(f"Symbols:       {', '.join(settings.symbols)}")
+    if settings.strategy_name == "in_play":
+        ip = settings.in_play
+        print(f"Strategy:      stocks in play (top {ip.top_n} by opening volume, {ip.or_minutes}-min range, "
+              f"shorts {'on' if ip.allow_short else 'off'})")
+    else:
+        print("Strategy:      opening-range breakout on a fixed list")
+        print(f"Symbols:       {', '.join(settings.symbols)}")
     positions = b.get_positions()
     print(f"Positions:     {len(positions) or 'none'}")
     for p in positions:
@@ -77,7 +84,12 @@ def cmd_run(settings, _args) -> None:
     n = Notifier(
         settings.telegram_bot_token, settings.telegram_chat_id, settings.discord_webhook_url, _redactor(settings)
     )
-    Engine(settings, b, n).run_forever()
+    if settings.strategy_name == "in_play":
+        from .engine_inplay import InPlayEngine
+
+        InPlayEngine(settings, b, n).run_forever()
+    else:
+        Engine(settings, b, n).run_forever()
 
 
 def cmd_flatten(settings, args) -> None:
@@ -102,6 +114,8 @@ def cmd_backtest(settings, args) -> None:
         raise SystemExit("--days must be between 1 and 3650")
     if args.equity <= 0 or args.slippage_bps < 0 or args.fee_per_share < 0:
         raise SystemExit("--equity must be > 0; --slippage-bps and --fee-per-share must be >= 0")
+    if (args.strategy or settings.strategy_name) == "in_play":
+        return _backtest_in_play(settings, args)
     if args.tv_csv:
         if not args.symbols or len(symbols) != 1:
             raise SystemExit("--tv-csv needs --symbols with exactly one symbol, e.g. --symbols SPY")
@@ -113,7 +127,7 @@ def cmd_backtest(settings, args) -> None:
         end = datetime.now(NY) - timedelta(minutes=20)  # free data plans can't query the last 15 min
         start = end - timedelta(days=args.days)
         print(f"Downloading 1-min bars for {len(symbols)} symbols, {start:%Y-%m-%d} -> {end:%Y-%m-%d} ...")
-        bars = b.get_bars(symbols, start, end)
+        bars = b.get_bars(symbols, start, end, feed=args.feed)
     if not bars:
         raise SystemExit("No bar data loaded.")
 
@@ -128,6 +142,48 @@ def cmd_backtest(settings, args) -> None:
         out = os.path.join(settings.log_dir, "backtest_trades.csv")
         trades.to_csv(out, index=False)
         print(f"\nTrade list saved to {out}")
+
+
+def _backtest_in_play(settings, args) -> None:
+    from .backtest import summarize
+    from .backtest_inplay import build_dataset, run_portfolio, simulate_days
+
+    b = _broker(settings)
+    end = (datetime.now(NY) - timedelta(days=1)).date()  # whole days only; today isn't finished
+    start = end - timedelta(days=args.days)
+    p, rp = settings.in_play, settings.risk
+    print(f"Stocks-in-play backtest {start} -> {end}: top {p.top_n} by opening relative volume, "
+          f"{p.or_minutes}-min range, stop {p.stop_atr_frac:.0%} of ATR, max leverage {p.max_leverage}x, "
+          f"risk {rp.risk_per_trade_pct:.2%}/trade, max {rp.max_open_positions} open.")
+    print("First run downloads a lot of data (can take 10-20 minutes); later runs use data_cache/.\n")
+    days, picks, bars = build_dataset(b, start, end, p, open_feed=args.open_feed, cache_dir=args.cache_dir)
+
+    fee = args.fee_per_share if args.fee_per_share > 0 else 0.0035
+    main_trades = main_curve = None
+    print("\nSlippage sensitivity (each way, on entries and stop/close exits):")
+    print(f"  {'slippage':>9} {'trades':>7} {'win%':>6} {'avg_R':>7} {'PF':>6} {'return%':>8} {'maxDD%':>7}")
+    for bps in sorted({0.0, 2.0, 5.0, 10.0, args.slippage_bps}):
+        sims = simulate_days(days, picks, bars, p, settings.strategy.flatten_time, bps)
+        trades, curve = run_portfolio(sims, p, rp, args.equity, fee)
+        sm = summarize(trades, curve, args.equity)
+        if sm.get("trades", 0):
+            print(f"  {bps:>7.1f}bp {sm['trades']:>7} {sm['win_rate']*100:>5.1f} {sm['avg_R']:>7.3f} "
+                  f"{sm['profit_factor']:>6} {sm['return_pct']:>8} {sm['max_drawdown_pct']:>7}")
+        else:
+            print(f"  {bps:>7.1f}bp       0")
+        if bps == args.slippage_bps:
+            main_trades, main_curve = trades, curve
+
+    print(f"\nDetail at {args.slippage_bps} bp slippage, ${fee}/share commission:")
+    print(json.dumps(summarize(main_trades, main_curve, args.equity), indent=2, default=str))
+    if main_trades is not None and not main_trades.empty:
+        print("\nLong vs short:")
+        print(main_trades.groupby("side").agg(trades=("pnl", "size"), pnl=("pnl", "sum"), avg_R=("r_multiple", "mean")).round(2))
+        os.makedirs(settings.log_dir, exist_ok=True)
+        out = os.path.join(settings.log_dir, "backtest_inplay_trades.csv")
+        main_trades.to_csv(out, index=False)
+        print(f"\nTrade list saved to {out}")
+    print("\nNote: the universe is today's listed stocks (delisted ones are missing), which flatters results a bit.")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -147,6 +203,12 @@ def main(argv: list[str] | None = None) -> None:
     bt.add_argument("--equity", type=float, default=25_000.0)
     bt.add_argument("--slippage-bps", type=float, default=2.0)
     bt.add_argument("--fee-per-share", type=float, default=0.0)
+    bt.add_argument("--strategy", choices=["orb", "in_play"], help="default: BOT_STRATEGY from .env")
+    bt.add_argument("--feed", default="sip", choices=["sip", "iex"],
+                    help="price data for backtests (default sip: full market, free for history)")
+    bt.add_argument("--open-feed", default="sip", choices=["sip", "iex"],
+                    help="in_play: data used to rank opening volume (live free plan uses iex)")
+    bt.add_argument("--cache-dir", default="data_cache", help="in_play: where downloaded data is cached")
     args = ap.parse_args(argv)
 
     settings = load_settings(args.env)

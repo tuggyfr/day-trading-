@@ -34,7 +34,7 @@ class FakeBroker:
     def get_positions(self):
         return self.positions
 
-    def symbols_traded_today(self, now):
+    def symbols_traded_today(self, now, prefix="orb"):
         return {o[0] for o in self.orders}
 
     def get_today_bars(self, symbols, now):

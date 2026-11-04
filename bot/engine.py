@@ -36,6 +36,8 @@ class DayState:
 
 
 class Engine:
+    order_prefix = "orb"  # client order IDs look like orb-20260302-SPY
+
     def __init__(self, settings: Settings, broker, notifier: Notifier | None = None):
         self.s = settings
         self.broker = broker
@@ -48,42 +50,51 @@ class Engine:
         """Run one cycle. Returns seconds to sleep before the next one."""
         clock = self.broker.get_clock()
         if not clock.is_open:
-            return next_session_wait(clock)
+            return self._while_closed(clock)
 
         now = clock.now
         if self.state.day != now.date():
             self.state = DayState(day=now.date())
-            self.state.entered = set(self.broker.symbols_traded_today(now))
+            self.state.entered = set(self.broker.symbols_traded_today(now, self.order_prefix))
             self.state.trades = len(self.state.entered)
             log.info("new session %s, already traded: %s", now.date(), sorted(self.state.entered) or "none")
 
         if self.state.halted or self.state.flattened:
-            return self.s.poll_seconds
+            return self._poll()
 
         acct = self.broker.get_account()
         if acct.trading_blocked:
             log.warning("account is blocked from trading")
-            return self.s.poll_seconds
+            return self._poll()
 
         if daily_loss_breached(acct.equity, acct.last_equity, self.s.risk):
             self.broker.close_all()
             self.state.halted = True
             pnl = acct.equity - acct.last_equity
             self.notify.send(f"KILL SWITCH: down ${pnl:,.2f} today. Closed all positions; done for the day.")
-            return self.s.poll_seconds
+            return self._poll()
 
         p = self.s.strategy
         if now.time() >= p.flatten_time:
             self.broker.close_all()
             self.state.flattened = True
             self.notify.send(f"End of day: flattened. Equity ${acct.equity:,.2f} ({acct.equity - acct.last_equity:+,.2f}).")
-            return self.s.poll_seconds
+            return self._poll()
 
-        if not (_range_end(p) <= now.time() < p.last_entry_time):
-            return self.s.poll_seconds
+        self._entry_phase(now, acct)
+        return self._poll()
 
-        self._look_for_entries(now, acct)
+    # ---- hooks a strategy can override ------------------------------------------------------------
+    def _poll(self) -> float:
         return self.s.poll_seconds
+
+    def _while_closed(self, clock) -> float:
+        return next_session_wait(clock)
+
+    def _entry_phase(self, now: datetime, acct) -> None:
+        p = self.s.strategy
+        if _range_end(p) <= now.time() < p.last_entry_time:
+            self._look_for_entries(now, acct)
 
     # ------------------------------------------------------------------------------------------
     def _look_for_entries(self, now: datetime, acct) -> None:
@@ -135,7 +146,7 @@ class Engine:
                 self.state.entered.add(sym)
                 continue
 
-            coid = client_order_id(now, sym)
+            coid = client_order_id(now, sym, self.order_prefix)
             stop_r, target_r = round_price(stop), round_price(target)
             try:
                 order_id = self.broker.submit_bracket(sym, sig.side, size.qty, stop_r, target_r, coid)

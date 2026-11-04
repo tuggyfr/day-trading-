@@ -28,6 +28,10 @@ chmod 600 .env
 mkdir -p logs && chmod 700 logs
 
 echo
-echo "Setup finished. Opening .env in TextEdit now."
-echo "Paste your Alpaca PAPER keys after ALPACA_API_KEY= and ALPACA_SECRET_KEY= (no spaces), then save and close."
-open -e .env
+if grep -q '^ALPACA_API_KEY=..*' .env && grep -q '^ALPACA_SECRET_KEY=..*' .env; then
+  echo "Setup finished. Your keys are already in .env."
+else
+  echo "Setup finished. Opening .env in TextEdit now."
+  echo "Paste your Alpaca PAPER keys after ALPACA_API_KEY= and ALPACA_SECRET_KEY= (no spaces), then save and close."
+  open -e .env
+fi

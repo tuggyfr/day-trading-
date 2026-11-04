@@ -11,6 +11,7 @@ credentials*.json
 
 # bot output (contains your balances and trades)
 logs/
+data_cache/
 
 # python
 __pycache__/

@@ -70,6 +70,28 @@ class RiskParams:
 
 
 @dataclass(frozen=True)
+class InPlayParams:
+    """"Stocks in play" opening-range breakout (Zarattini, Barbon & Aziz 2024), see docs/strategy-research.md.
+
+    Each day: scan all liquid US stocks, keep the `top_n` with the most unusual volume in the opening range,
+    trade the breakout in the direction of the opening candle, stop at `stop_atr_frac` x 14-day ATR, and hold
+    to the end of the day (no profit target).
+    """
+
+    top_n: int = 20                        # trade at most this many in-play stocks per day
+    or_minutes: int = 5                    # opening range length (paper: 5)
+    min_rel_volume: float = 1.0            # opening volume >= 100% of its 14-day average
+    min_price: float = 5.0
+    min_avg_volume: float = 1_000_000      # 14-day average daily shares
+    min_atr: float = 0.50                  # 14-day average true range, dollars
+    lookback_days: int = 14
+    stop_atr_frac: float = 0.10            # stop distance = 10% of ATR
+    allow_short: bool = True               # paper trades both directions; shorts need a margin account
+    max_leverage: float = 2.0              # total positions <= 2x equity (paper used 4x)
+    last_entry_time: time = time(15, 0)    # no new entries after this
+
+
+@dataclass(frozen=True)
 class Settings:
     api_key: str = ""
     secret_key: str = ""
@@ -84,6 +106,8 @@ class Settings:
     discord_webhook_url: str = ""
     strategy: StrategyParams = field(default_factory=StrategyParams)
     risk: RiskParams = field(default_factory=RiskParams)
+    strategy_name: str = "orb"             # "orb" = fixed symbol list, "in_play" = daily stocks-in-play scan
+    in_play: InPlayParams = field(default_factory=InPlayParams)
 
     def validate_params(self) -> None:
         """Reject settings that are malformed or dangerous. Runs for every command, including backtests.
@@ -121,6 +145,18 @@ class Settings:
             problems.append(f"invalid symbols in BOT_SYMBOLS: {bad}")
         if len(self.symbols) > 50:
             problems.append("BOT_SYMBOLS has more than 50 symbols")
+        if self.strategy_name not in {"orb", "in_play"}:
+            problems.append(f"BOT_STRATEGY={self.strategy_name!r} must be 'orb' or 'in_play'")
+        ip = self.in_play
+        bound("INPLAY_TOP_N", ip.top_n, 0, 50)
+        if ip.or_minutes not in {1, 5, 10, 15, 30}:
+            problems.append("INPLAY_OR_MINUTES must be one of 1, 5, 10, 15, 30")
+        bound("INPLAY_MIN_REL_VOLUME", ip.min_rel_volume, -1e-9, 1000)
+        bound("INPLAY_STOP_ATR_FRAC", ip.stop_atr_frac, 0, 2.0)
+        bound("INPLAY_MAX_LEVERAGE", ip.max_leverage, 0, 4.0)
+        bound("INPLAY_LOOKBACK_DAYS", ip.lookback_days, 1, 60)
+        if not (ip.last_entry_time < p.flatten_time):
+            problems.append("need INPLAY_LAST_ENTRY < ORB_FLATTEN")
         if self.discord_webhook_url and not self.discord_webhook_url.startswith("https://"):
             problems.append("DISCORD_WEBHOOK_URL must start with https://")
         if problems:
@@ -192,6 +228,20 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         discord_webhook_url=os.getenv("DISCORD_WEBHOOK_URL", ""),
         strategy=strategy,
         risk=risk,
+        strategy_name=os.getenv("BOT_STRATEGY", "orb").strip().lower(),
+        in_play=InPlayParams(
+            top_n=_int("INPLAY_TOP_N", 20),
+            or_minutes=_int("INPLAY_OR_MINUTES", 5),
+            min_rel_volume=_float("INPLAY_MIN_REL_VOLUME", 1.0),
+            min_price=_float("INPLAY_MIN_PRICE", 5.0),
+            min_avg_volume=_float("INPLAY_MIN_AVG_VOLUME", 1_000_000),
+            min_atr=_float("INPLAY_MIN_ATR", 0.50),
+            lookback_days=_int("INPLAY_LOOKBACK_DAYS", 14),
+            stop_atr_frac=_float("INPLAY_STOP_ATR_FRAC", 0.10),
+            allow_short=_bool("INPLAY_ALLOW_SHORT", True),
+            max_leverage=_float("INPLAY_MAX_LEVERAGE", 2.0),
+            last_entry_time=_time("INPLAY_LAST_ENTRY", "15:00"),
+        ),
     )
     settings.validate_params()
     return settings
