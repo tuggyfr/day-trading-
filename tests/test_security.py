@@ -12,6 +12,9 @@ from bot.config import RiskParams, Settings, StrategyParams
 from bot.notifier import MAX_LEN, MAX_PER_MINUTE, Notifier, RedactingFilter, Redactor
 
 ROOT = Path(__file__).resolve().parent.parent
+needs_git = pytest.mark.skipif(
+    not (ROOT / ".git").exists(), reason="not a git checkout (e.g. downloaded as a ZIP)"
+)
 
 SECRET_PATTERNS = [
     re.compile(r"\b(PK|AK|CK)[A-Z0-9]{16,}\b"),                          # Alpaca key IDs
@@ -22,6 +25,7 @@ SECRET_PATTERNS = [
 ]
 
 
+@needs_git
 def test_no_secrets_in_tracked_files():
     files = subprocess.check_output(["git", "ls-files"], cwd=ROOT, text=True).split()
     hits = []
@@ -33,6 +37,7 @@ def test_no_secrets_in_tracked_files():
     assert not hits, f"possible secrets committed: {hits}"
 
 
+@needs_git
 def test_env_file_is_gitignored():
     out = subprocess.run(["git", "check-ignore", ".env", "logs/bot.log"], cwd=ROOT, capture_output=True, text=True)
     assert ".env" in out.stdout and "logs/bot.log" in out.stdout
